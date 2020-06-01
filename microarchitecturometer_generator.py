@@ -31,7 +31,7 @@ padding = lambda i: asm('"nop\\n"' * i)
 
 # Test for load buffer size
 # padding = lambda i: asm(repeat(i, map('"mov (%{0}), %{0}\\n"'.format, range(6)))) # x86
-# padding = lambda i: asm(repeat(i, map('"ldr %{0}, (%{0})\\n"'.format, range(6)))) # aarch64
+# padding = lambda i: asm(repeat(i, map('"ldr %{0}, [%{0}]\\n"'.format, range(6)))) # aarch64
 
 # Test for store buffer size
 # store_buffer_size = max(test_sizes)
