@@ -13,15 +13,26 @@ repeat = lambda n, instrs: "".join(islice(cycle(instrs), n))
 asm = 'asm volatile(""{} : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3), "+r"(r4), "+r"(r5), "+r"(list_0), "+r"(list_1) :: "cc");'.format
 work_loop = 1024
 store_buffer_size = 1
+hash_mem = ""
+init = "0"
 
 # Generally you want to use the first of these, but the others can potentially be more consistent
 work = "list_{0} = (void **)*list_{0};"
+# work = "list_{0} = (void **)((size_t)*list_{0} ^ 1000);"; hash_mem = "mem[i] = (void **)((size_t)mem[i] ^ 1000);"
 # work = asm('"lzcnt %{0}, %{0}\\n"' * work_loop) # x86
 # work = asm('"smulh %{0}, %{0}, %{0}\\n"' * work_loop) # aarch64
 # work = asm('"clz %{0}, %{0}\\n"' * work_loop) # aarch64
 
 # Test for ROB size
 padding = lambda i: asm('"nop\\n"' * i)
+
+# Test for NOP collapsing; this can hit other resource limits, so don't expect perfect results. Tuned empirically.
+# padding = lambda i: asm(repeat(i, ('"test %0, %0\\n"', '"add %1, %1\\n"', '"add %2, %2\\n"', '"jo .+0xF0\\n"', '"test %3, %3\\n"', '"add %4, %4\\n"', '"jo .+0xF0\\n"'))) # x86
+# padding = lambda i: asm(repeat(i, ('"cmp %0, %0\\n"', '"add %1, %1, %1\\n"', '"add %2, %2, %2\\n"', '"b.ne .+0xF0\\n"', '"cmp %3, %3\\n"', '"add %4, %4, %4\\n"', '"b.ne .+0xF0\\n"'))) # aarch64
+
+# Tests for the number of possible outstanding branches; I'm not sure what this is actually measuring, but it's useful to know
+# padding = lambda i: asm('"test %2, %2\\n"' + '"jc .+0xF0\\n"' * i) # x86
+# padding = lambda i: asm('"cmp %2, %2\\n"' + '"b.ne .+0xF0\\n"' * i) # aarch64
 
 # Tests for the number of rename registers — not exact for some reason
 # padding = lambda i: asm(repeat(i, map('"mov %{0}, %{0}\\n"'.format, range(6))))
@@ -30,10 +41,12 @@ padding = lambda i: asm('"nop\\n"' * i)
 # padding = lambda i: asm(repeat(i, map('"add %{0}, %{0}, %{0}\\n"'.format, range(6)))) # aarch64
 
 # Test for load buffer size
+# init = "*mem"
 # padding = lambda i: asm(repeat(i, map('"mov (%{0}), %{0}\\n"'.format, range(6)))) # x86
 # padding = lambda i: asm(repeat(i, map('"ldr %{0}, [%{0}]\\n"'.format, range(6)))) # aarch64
 
 # Test for store buffer size
+# init = "*mem"
 # store_buffer_size = max(test_sizes)
 # padding = lambda i: asm(repeat(i, map('"mov %0, {}(%0)\\n"'.format, count(0, 8)))) # x86
 # padding = lambda i: asm(repeat(i, map('"str %0, [%0, {}]\\n"'.format, count(0, 8)))) # aarch64
@@ -49,45 +62,48 @@ setup = """\
 #include <time.h>
 
 __attribute__((noinline))
-uint64_t get_nanos() {
+uint64_t get_nanos() {{
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return now.tv_sec * UINT64_C(1000000000) + now.tv_nsec;
-}
+}}
 
 
 // *Really* minimal PCG32 code / (c) 2014 M.E. O'Neill / pcg-random.org
 // Licensed under Apache License 2.0 (NO WARRANTY, etc. see website)
-typedef struct { uint64_t state;  uint64_t inc; } pcg32_random_t;
+typedef struct {{ uint64_t state;  uint64_t inc; }} pcg32_random_t;
 
-uint32_t pcg32_random_r(pcg32_random_t* rng)
-{
+uint32_t pcg32_random_r(pcg32_random_t* rng) {{
     uint64_t oldstate = rng->state;
     rng->state = oldstate * 6364136223846793005ULL + (rng->inc|1);
     uint32_t xorshifted = ((oldstate >> 18u) ^ oldstate) >> 27u;
     uint32_t rot = oldstate >> 59u;
     return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
-}
+}}
 
 // Creates n_lists linked lists of length list_len,
 // such that every n_lists'th element of mem is a member of a given list
-void init_memory(void **mem, uint32_t list_len, uint32_t n_lists) {
-    if (!list_len) {
+void init_memory(void **mem, uint32_t list_len, uint32_t n_lists) {{
+    if (!list_len) {{
         return;
-    }
+    }}
 
-    pcg32_random_t rng = {0, 0};
-    for (uint32_t i = 0; i < n_lists; ++i) {
+    pcg32_random_t rng = {{0, 0}};
+    for (uint32_t i = 0; i < n_lists; ++i) {{
         mem[i] = &mem[i];
-    }
-    for (uint32_t i = 1; i < list_len; ++i) {
-        for (uint32_t j = 0; j < n_lists; ++j) {
+    }}
+    for (uint32_t i = 1; i < list_len; ++i) {{
+        for (uint32_t j = 0; j < n_lists; ++j) {{
             uint32_t k = pcg32_random_r(&rng) % i;
             mem[i * n_lists + j] = mem[k * n_lists + j];
             mem[k * n_lists + j] = &mem[i * n_lists + j];
-        }
-    }
-}
+        }}
+    }}
+
+    for (uint32_t i = 0; i < list_len * n_lists; ++i) {{
+        {hash_mem}
+    }}
+}}
 """
 
 time_rob = """
@@ -96,7 +112,7 @@ uint64_t time_rob_{variant}{n:06}(void **list_0, void **list_1) {{
     uint64_t start = get_nanos();
 
     uint64_t mem[{store_buffer_size}]; *mem = (uint64_t)mem;
-    uint64_t r0 = *mem, r1 = *mem, r2 = *mem, r3 = *mem, r4 = *mem, r5 = *mem;
+    uint64_t r0 = {init}, r1 = {init}, r2 = {init}, r3 = {init}, r4 = {init}, r5 = {init};
     _Pragma("nounroll")
     for (uint64_t i = 0; i < {loops}; ++i) {{
         {work_0}
@@ -133,11 +149,11 @@ int main() {{
 
 
 
-print(setup)
+print(setup.format(hash_mem=hash_mem))
 
 for size in test_sizes:
-    print(time_rob.format(n=size, store_buffer_size=store_buffer_size, loops=loops, variant="",          work_0=work.format(0), work_1=work.format(1), padding=padding(size)))
-    print(time_rob.format(n=size, store_buffer_size=store_buffer_size, loops=loops, variant="baseline_", work_0=work.format(0), work_1=work.format(0), padding=padding(size)))
+    print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="",          work_0=work.format(0), work_1=work.format(1), padding=padding(size)))
+    print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="baseline_", work_0=work.format(0), work_1=work.format(0), padding=padding(size)))
 
 run_tests = "".join(f"""\
         results[{idx}] += time_rob_{size:06}(mem + {2 * idx}, mem + {2 * idx + 1});
