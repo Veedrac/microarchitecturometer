@@ -15,6 +15,7 @@ work_loop = 1024
 store_buffer_size = 1
 hash_mem = ""
 init = "0"
+singular = False
 
 # Generally you want to use the first of these, but the others can potentially be more consistent
 work = "list_{0} = (void **)*list_{0};"
@@ -22,6 +23,10 @@ work = "list_{0} = (void **)*list_{0};"
 # work = asm('"lzcnt %{0}, %{0}\\n"' * work_loop) # x86
 # work = asm('"smulh %{0}, %{0}, %{0}\\n"' * work_loop) # aarch64
 # work = asm('"clz %{0}, %{0}\\n"' * work_loop) # aarch64
+
+# Singular variant, shows multiple discontinuities to allow more deductive calculations
+# Set repeats much higher than usual (eg. 100) to increase visibility, though loops can be lower
+# work = "r0 += *(size_t *)((size_t)list_0[i * 197] ^ 1000);"; hash_mem = "mem[i] = (void **)((size_t)mem[i] ^ 1000);"; singular = True
 
 # Test for ROB size
 padding = lambda i: asm('"nop\\n"' * i)
@@ -116,9 +121,9 @@ uint64_t time_rob_{variant}{n:06}(void **list_0, void **list_1) {{
     _Pragma("nounroll")
     for (uint64_t i = 0; i < {loops}; ++i) {{
         {work_0}
-        {padding}
+        {padding_0}
         {work_1}
-        {padding}
+        {padding_1}
     }}
 
     return get_nanos() - start;
@@ -151,9 +156,13 @@ int main() {{
 
 print(setup.format(hash_mem=hash_mem))
 
-for size in test_sizes:
-    print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="",          work_0=work.format(0), work_1=work.format(1), padding=padding(size)))
-    print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="baseline_", work_0=work.format(0), work_1=work.format(0), padding=padding(size)))
+if singular:
+    for size in test_sizes:
+        print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="",          work_0=work, work_1="", padding_0=padding(size), padding_1=""))
+else:
+    for size in test_sizes:
+        print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="",          work_0=work.format(0), work_1=work.format(1), padding_0=padding(size), padding_1=padding(size)))
+        print(time_rob.format(n=size, init=init, store_buffer_size=store_buffer_size, loops=loops, variant="baseline_", work_0=work.format(0), work_1=work.format(0), padding_0=padding(size), padding_1=padding(size)))
 
 run_tests = "".join(f"""\
         results[{idx}] += time_rob_{size:06}(mem + {2 * idx}, mem + {2 * idx + 1});
@@ -165,6 +174,13 @@ run_baseline_tests = "".join(f"""\
 
 print_results = "".join(f"""\
     printf("{size}\t%" PRIu64 "\t%" PRIu64 "\\n", results[{idx}] / {repeats}, results_baseline[{idx}] / {repeats});
+""" for idx, size in enumerate(test_sizes))
+
+if singular:
+    run_baseline_tests = ""
+
+    print_results = "".join(f"""\
+    printf("{size}\t%" PRIu64 "\\n", results[{idx}] / {repeats});
 """ for idx, size in enumerate(test_sizes))
 
 print(main.format(n_results=len(test_sizes), list_len=list_len, repeats=repeats, run_tests=run_tests, run_baseline_tests=run_baseline_tests, print_results=print_results))
