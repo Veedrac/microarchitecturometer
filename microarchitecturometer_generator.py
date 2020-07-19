@@ -1,4 +1,7 @@
+import sys
 from itertools import count, cycle, islice
+
+
 
 # Size config
 loops = 10000
@@ -12,49 +15,88 @@ list_len = max_memory // 8 // repeats // 2
 repeat = lambda n, instrs: "".join(islice(cycle(instrs), n))
 asm = 'asm volatile(""{} : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3), "+r"(r4), "+r"(r5), "+r"(list_0), "+r"(list_1) :: "cc");'.format
 work_loop = 1024
-store_buffer_size = 1
-hash_mem = ""
-init = "0"
-singular = False
 
-# Generally you want to use the first of these, but the others can potentially be more consistent
-work = "list_{0} = (void **)*list_{0};"
-# work = "list_{0} = (void **)((size_t)*list_{0} ^ 1000);"; hash_mem = "mem[i] = (void **)((size_t)mem[i] ^ 1000);"
-# work = asm('"lzcnt %{0}, %{0}\\n"' * work_loop) # x86
-# work = asm('"smulh %{0}, %{0}, %{0}\\n"' * work_loop) # aarch64
-# work = asm('"clz %{0}, %{0}\\n"' * work_loop) # aarch64
 
-# Singular variant, shows multiple discontinuities to allow more deductive calculations
-# Set repeats much higher than usual (eg. 100) to increase visibility, though loops can be lower
-# work = "r0 += *(size_t *)((size_t)list_0[i * 197] ^ 1000);"; hash_mem = "mem[i] = (void **)((size_t)mem[i] ^ 1000);"; singular = True
 
-# Test for ROB size
-padding = lambda i: asm('"nop\\n"' * i)
+work_opts = {
+    # Generally you want to use the first of these, but the others can potentially be more consistent
+    "mem":           "list_{0} = (void **)*list_{0};",
+    "hash":          { "padding": "list_{0} = (void **)((size_t)*list_{0} ^ 1000);", "hash_mem": "mem[i] = (void **)((size_t)mem[i] ^ 1000);" },
+    "lzcnt-x86":     asm('"lzcnt %{0}, %{0}\\n"' * work_loop),
+    "smulh-aarch64": asm('"smulh %{0}, %{0}, %{0}\\n"' * work_loop),
+    "clz-aarch64":   asm('"clz %{0}, %{0}\\n"' * work_loop),
 
-# Test for NOP collapsing; this can hit other resource limits, so don't expect perfect results. Tuned empirically.
-# padding = lambda i: asm(repeat(i, ('"test %0, %0\\n"', '"add %1, %1\\n"', '"add %2, %2\\n"', '"jo .+0xF0\\n"', '"test %3, %3\\n"', '"add %4, %4\\n"', '"jo .+0xF0\\n"'))) # x86
-# padding = lambda i: asm(repeat(i, ('"cmp %0, %0\\n"', '"add %1, %1, %1\\n"', '"add %2, %2, %2\\n"', '"b.ne .+0xF0\\n"', '"cmp %3, %3\\n"', '"add %4, %4, %4\\n"', '"b.ne .+0xF0\\n"'))) # aarch64
+    # Singular variant, shows multiple discontinuities to allow more deductive calculations
+    # Set repeats much higher than usual (eg. 100) to increase visibility, though loops can be lower
+    "parmem": { "work": "r0 += *(size_t *)((size_t)list_0[i * 197] ^ 1000);", "hash_mem": "mem[i] = (void **)((size_t)mem[i] ^ 1000);", "singular": True },
+}
 
-# Tests for the number of possible outstanding branches; I'm not sure what this is actually measuring, but it's useful to know
-# padding = lambda i: asm('"test %2, %2\\n"' + '"jc .+0xF0\\n"' * i) # x86
-# padding = lambda i: asm('"cmp %2, %2\\n"' + '"b.ne .+0xF0\\n"' * i) # aarch64
+padding_opts = {
+    # Test for ROB size
+    "nop": lambda i: asm('"nop\\n"' * i),
 
-# Tests for the number of rename registers — not exact for some reason
-# padding = lambda i: asm(repeat(i, map('"mov %{0}, %{0}\\n"'.format, range(6))))
-# padding = lambda i: asm(repeat(i, map('"cmp %{0}, %{0}\\n"'.format, range(6))))
-# padding = lambda i: asm(repeat(i, map('"add %{0}, %{0}\\n"'.format, range(6)))) # x86
-# padding = lambda i: asm(repeat(i, map('"add %{0}, %{0}, %{0}\\n"'.format, range(6)))) # aarch64
+    # Test for NOP collapsing; this can hit other resource limits, so don't expect perfect results. Tuned empirically.
+    "generic-x86":     lambda i: asm(repeat(i, ('"test %0, %0\\n"', '"add %1, %1\\n"', '"add %2, %2\\n"', '"jo .+0xF0\\n"', '"test %3, %3\\n"', '"add %4, %4\\n"', '"jo .+0xF0\\n"'))),
+    "generic-aarch64": lambda i: asm(repeat(i, ('"cmp %0, %0\\n"', '"add %1, %1, %1\\n"', '"add %2, %2, %2\\n"', '"b.ne .+0xF0\\n"', '"cmp %3, %3\\n"', '"add %4, %4, %4\\n"', '"b.ne .+0xF0\\n"'))),
 
-# Test for load buffer size
-# init = "*mem"
-# padding = lambda i: asm(repeat(i, map('"mov (%{0}), %{0}\\n"'.format, range(6)))) # x86
-# padding = lambda i: asm(repeat(i, map('"ldr %{0}, [%{0}]\\n"'.format, range(6)))) # aarch64
+    # Tests for the number of possible outstanding branches; I'm not sure what this is actually measuring, but it's useful to know
+    "branch-x86":     lambda i: asm('"test %2, %2\\n"' + '"jc .+0xF0\\n"' * i),
+    "branch-aarch64": lambda i: asm('"cmp %2, %2\\n"' + '"b.ne .+0xF0\\n"' * i),
 
-# Test for store buffer size
-# init = "*mem"
-# store_buffer_size = max(test_sizes)
-# padding = lambda i: asm(repeat(i, map('"mov %0, {}(%0)\\n"'.format, count(0, 8)))) # x86
-# padding = lambda i: asm(repeat(i, map('"str %0, [%0, {}]\\n"'.format, count(0, 8)))) # aarch64
+    # Tests for the number of rename registers — not exact for some reason
+    "mov":         lambda i: asm(repeat(i, map('"mov %{0}, %{0}\\n"'.format, range(6)))),
+    "cmp":         lambda i: asm(repeat(i, map('"cmp %{0}, %{0}\\n"'.format, range(6)))),
+    "add-x86":     lambda i: asm(repeat(i, map('"add %{0}, %{0}\\n"'.format, range(6)))),
+    "add-aarch64": lambda i: asm(repeat(i, map('"add %{0}, %{0}, %{0}\\n"'.format, range(6)))),
+
+    # Test for load buffer size
+    "load-x86":     { "padding": lambda i: asm(repeat(i, map('"mov (%{0}), %{0}\\n"'.format, range(6)))), "init": "*mem" },
+    "load-aarch64": { "padding": lambda i: asm(repeat(i, map('"ldr %{0}, [%{0}]\\n"'.format, range(6)))), "init": "*mem" },
+
+    # Test for store buffer size
+    "store-x86":     { "padding": lambda i: asm(repeat(i, map('"mov %0, {}(%0)\\n"'.format,   count(0, 8)))), "init": "*mem", "store_buffer_size": max(test_sizes) },
+    "store-aarch64": { "padding": lambda i: asm(repeat(i, map('"str %0, [%0, {}]\\n"'.format, count(0, 8)))), "init": "*mem", "store_buffer_size": max(test_sizes) },
+}
+
+
+
+try:
+    _, work_arg, padding_arg = sys.argv
+except ValueError:
+    print("microarchitecturometer_generator.py <work> <padding>", file=sys.stderr)
+    print("Invalid number of parameters.", file=sys.stderr)
+    raise SystemExit
+
+try:
+    work_choice = work_opts[work_arg]
+except KeyError:
+    print(f"Invalid work option {work_arg!r}", file=sys.stderr)
+    print("Valid options:", file=sys.stderr)
+    for key in work_opts:
+        print(f"    {key}", file=sys.stderr)
+    raise SystemExit
+
+try:
+    padding_choice = padding_opts[padding_arg]
+except KeyError:
+    print(f"Invalid padding option {padding_arg!r}", file=sys.stderr)
+    print("Valid options:", file=sys.stderr)
+    for key in padding_opts:
+        print(f"    {key}", file=sys.stderr)
+    raise SystemExit
+
+if not isinstance(work_choice, dict):
+    work_choice = { "work": work_choice }
+if not isinstance(padding_choice, dict):
+    padding_choice = { "padding": padding_choice }
+
+work = work_choice["work"]
+hash_mem = work_choice.get("hash_mem", "")
+singular = work_choice.get("singular", False)
+
+padding = padding_choice["padding"]
+init = padding_choice.get("init", "0")
+store_buffer_size = padding_choice.get("store_buffer_size", 1)
 
 
 
