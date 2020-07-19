@@ -28,7 +28,8 @@ work_opts = {
 
     # Singular variant, shows multiple discontinuities to allow more deductive calculations
     # Set repeats much higher than usual (eg. 100) to increase visibility, though loops can be lower
-    "parmem": { "work": "r0 += *(size_t *)((size_t)list_0[i * 197] ^ 1000);", "hash_mem": "mem[i] = (void **)((size_t)mem[i] ^ 1000);", "singular": True },
+    "parmem":  { "work": "r0 += *(size_t *)(list_0[i * 197]);", "singular": True },
+    "parhash": { "work": "r0 += *(size_t *)((size_t)list_0[i * 197] ^ 1000);", "hash_mem": "mem[i] = (void **)((size_t)mem[i] ^ 1000);", "singular": True },
 }
 
 padding_opts = {
