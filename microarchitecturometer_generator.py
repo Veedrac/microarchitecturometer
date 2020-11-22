@@ -16,17 +16,25 @@ def interleave(*args):
 
 # Test configs
 repeat = lambda n, instrs: "".join(islice(cycle(instrs), n))
-asm = 'asm volatile(""{} : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3), "+r"(r4), "+r"(r5), "+r"(r6), "+r"(list_0), "+r"(list_1) :: "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "cc");'.format
+
+def asm(assembly, extra_clobber=False):
+    if extra_clobber:
+        return f'asm volatile(""{assembly} : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3), "+r"(r4), "+r"(r5), "+r"(r6), "+r"(list_0), "+r"(list_1) :: "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "cc");'
+    else:
+        return f'asm volatile(""{assembly} : "+r"(r0), "+r"(r1), "+r"(r2), "+r"(r3), "+r"(r4), "+r"(r5), "+r"(r6), "+r"(list_0), "+r"(list_1) :: "cc");'
+
 work_loop = 1024
 
 work_opts = {
+    "none":          { "work": "", "singular": True },
+
     # Generally you want to use the first of these, but the others can potentially be more consistent
     "mem":           "list_{0} = (void **)*list_{0};",
     "hash":          { "work": "list_{0} = (void **)((size_t)*list_{0} ^ 1000);", "hash_mem": "mem[i] = (void **)((size_t)mem[i] ^ 1000);" },
     "lzcnt-x86":     asm('"lzcnt %{0}, %{0}\\n"' * work_loop),
     "smulh-aarch64": asm('"smulh %{0}, %{0}, %{0}\\n"' * work_loop),
     "clz-aarch64":   asm('"clz %{0}, %{0}\\n"' * work_loop),
-    "fmla-aarch64":  asm('"fmla v{0}.4s, v{0}.4s, v{0}.4s\\n"' * work_loop),
+    "fmla-aarch64":  asm('"fmla v{0}.4s, v{0}.4s, v{0}.4s\\n"' * work_loop, extra_clobber=True),
 
     # Singular variant, shows multiple discontinuities to allow more deductive calculations
     # Set repeats much higher than usual (eg. 100) to increase visibility, though loops can be lower
@@ -41,7 +49,7 @@ padding_opts = {
     "movz-fmla-aarch64": lambda i: asm(repeat(i, interleave(
         map('"movz %{0}, 0xFF\\n"'.format, range(2, 7)),
         map('"fmla v{0}.4s, v{1}.4s, v{1}.4s\\n"'.format, range(2, 7), range(7, 12))
-    ))),
+    )), extra_clobber=True),
 
     # Test for NOP collapsing; this can hit other resource limits, so don't expect perfect results. Tuned empirically.
     "generic-x86":     lambda i: asm(repeat(i, ('"test %2, %2\\n"', '"add %3, %3\\n"', '"add %4, %4\\n"', '"jo .+0xF0\\n"', '"test %5, %5\\n"', '"add %6, %6\\n"', '"jo .+0xF0\\n"'))),
@@ -71,7 +79,10 @@ padding_opts = {
     "store-aarch64": { "padding": lambda i: asm(repeat(i, map('"str %2, [%2, {}]\\n"'.format, count(0, 8)))), "init": "*mem", "store_buffer_size": max(test_sizes) },
 
     # Tests for the number of FP rename registers
-    "fmla-aarch64": lambda i: asm(repeat(i, map('"fmla v{0}.4s, v{1}.4s, v{1}.4s\\n"'.format, range(2, 7), range(7, 12)))),
+    "fmla-aarch64": lambda i: asm(repeat(i, map('"fmla v{0}.4s, v{1}.4s, v{1}.4s\\n"'.format, range(2, 7), range(7, 12))), extra_clobber=True),
+
+    # Test for µop-cache size
+    "jumpadd-x86": lambda i: asm(repeat(i, ('"jmp .+2\\n"', '"add %2, %2\\n"', '"add %3, %3\\n"', '"add %4, %4\\n"', '"add %5, %5\\n"', '"add %6, %6\\n"'))),
 }
 
 
