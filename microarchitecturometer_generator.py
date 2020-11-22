@@ -83,6 +83,7 @@ padding_opts = {
 
     # Test for µop-cache size
     "jumpadd-x86": lambda i: asm(repeat(i, ('"jmp .+2\\n"', '"add %2, %2\\n"', '"add %3, %3\\n"', '"add %4, %4\\n"', '"add %5, %5\\n"', '"add %6, %6\\n"'))),
+    "jumpadd-aarch64": lambda i: asm(repeat(i, ('"b .+4\\n"', '"add %2, %2, %2\\n"', '"add %3, %3, %3\\n"', '"add %4, %4, %4\\n"', '"add %5, %5, %5\\n"', '"add %6, %6, %6\\n"'))),
 }
 
 
